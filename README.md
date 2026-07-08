@@ -107,3 +107,134 @@ python inference/inference_CDNA2D.py -ckpt your_pretrained_ckpt --options_about_
 ```bash
 python inference/inference_CDNA1D.py -ckpt your_pretrained_ckpt --options_about_data
 ```
+
+### Model interpretation (motif discovery)
+
+Evo2HiC can be interpreted to reveal the sequence motifs that drive its predictions.
+`interpretation/inter_CDNA1d.py` attributes a finetuned epigenomic-prediction model (CDNA1d, which
+predicts epigenomic profiles from DNA + Hi-C) back to the input nucleotides, then calls
+[TF-MoDISco](https://github.com/jmschrei/tfmodisco-lite) to discover motifs and match them against a
+motif database.
+
+This needs a few extra packages that are not in `Evo2HiC.yaml`:
+
+```bash
+pip install captum tangermeme modisco-lite
+```
+
+Compute per-base attributions and run motif discovery for each cell type / epigenomic assay:
+
+```bash
+python interpretation/inter_CDNA1d.py -ckpt your_epi_ckpt --save-dir human_inter -m deepliftshap
+```
+
+`-m` selects the attribution method (`deepliftshap`, `IG`, or `perturb`). Results are written under
+`<checkpoint_dir>/human_inter/<cellline>/<assay>/`, including the sampled sequences
+(`seq_sample.npy`), attributions (`attr_sample.npy`), the TF-MoDISco results (`modisco_results.h5`),
+and an HTML `report/` matching discovered motifs against `motif_data` (`data/dna/motifs.meme` in
+`config.py`).
+
+## Tutorial: Training on a new dataset
+
+This is a step-by-step walkthrough of how to run Evo2HiC on your own data — a new biosample or a
+new species. It expands on the [Usage](#usage) section above with the exact files you need to
+prepare and the config entries you need to edit. All paths and flags refer to the scripts in this
+repository; defaults are defined in `config.py` and `dataset/data_arguments.py`.
+
+Evo2HiC is trained jointly on genome sequence, Evo~2 embeddings, and Hi-C contact maps. To add
+your own dataset you provide three ingredients — a reference genome (FASTA), precomputed Evo~2
+embeddings, and one or more Hi-C maps — then register them in `config.py` and run training.
+
+### Step 1 — Add the reference genome
+Place the genome FASTA on disk and register it in `config.py`:
+
+```python
+# config.py
+references = {'human': 'hg38', 'mouse': 'mm10', 'mynewspecies': 'myasm1'}
+DNA_map    = {..., 'mynewspecies': 'data/dna/mynewspecies/myasm1.fa'}
+# Mappability is optional; set to None if you do not have a Umap track.
+mappability_map = {..., 'mynewspecies': None}
+```
+
+### Step 2 — Precompute Evo~2 embeddings
+Evo2HiC distills Evo~2 (7B); the sequence embeddings are generated once per chromosome and
+cached as memory-mapped arrays. Run, for each chromosome:
+
+```bash
+python misc/generate_evo2_embedding.py \
+    -c <chromosome_number> \
+    -r myasm1 \
+    --DNA-file-path data/dna/mynewspecies/myasm1.fa
+```
+
+This writes embeddings to `data/dna/mynewspecies/myasm1_evo2_7b/`. Point `config.py` at it:
+
+```python
+evo2_embedding_map = {..., 'mynewspecies': 'data/dna/mynewspecies/myasm1_evo2_7b/'}
+```
+
+> Note: this step requires the [`evo2`](https://github.com/ArcInstitute/evo2) package and a GPU.
+> If you only need the lightweight distilled encoder for inference, you can skip Evo~2 embeddings
+> at training/inference time by leaving `--evo2-option No` (the default).
+
+### Step 3 — Register the Hi-C data
+Save your `.hic` / `.cool` files under the directory given by `hic_data_dir` in `config.py`, and
+add one row per dataset to the index TSV (`data/hic_index.tsv`), following the existing column
+layout. The `split` column (`train`/`valid`/`test`) and the per-chromosome split in `config.py`'s
+`splits` dictionary control how data is partitioned:
+
+```python
+# config.py
+splits = {
+    ...,
+    'mynewspecies': {
+        'train': (1, 2, 3, 4, 5, 6, 7),
+        'valid': (8,),
+        'test':  (9, 10),
+    },
+}
+```
+
+### Step 4 — Pretrain (optional) or finetune
+To pretrain the joint sequence–structure encoder from scratch on the new data:
+
+```bash
+accelerate launch train/pretrain.py
+```
+
+In most cases it is faster and more accurate to finetune the released checkpoint
+(see [Pretrained Models](#pretrained-models)) for the task you care about, e.g. predicting Hi-C
+from sequence on the new biosample:
+
+```bash
+accelerate launch train/train_CDNA2d_Seq2HiC.py --initialize checkpoints/pretrained_weights/model.pt
+```
+
+Pass `-sp mynewspecies` and the relevant data flags (resolution, normalization, etc.) defined in
+`dataset/data_arguments.py`. Training is logged to Weights & Biases (wandb).
+
+The same `--initialize` pattern applies to the other tasks: `train/train_CDNA2d_ResEnh.py` for
+Hi-C resolution enhancement and `train/train_CDNA1d.py` for epigenomic profile prediction.
+
+### Step 5 — Run inference with your trained model
+Each finetuned checkpoint is saved together with an `args.json` recording its training
+configuration, which the inference scripts read automatically. Point the inference script at your
+checkpoint and select the data with the same `-sp`/`--split` flags used during training.
+
+Predict Hi-C contact maps (Seq2HiC or resolution enhancement):
+
+```bash
+python inference/inference_CDNA2d.py -ckpt your_finetuned_ckpt \
+    -sp mynewspecies --split test --save-dir my_results
+```
+
+Predict epigenomic profiles:
+
+```bash
+python inference/inference_CDNA1d.py -ckpt your_finetuned_ckpt \
+    --split test --save-dir my_results
+```
+
+Results are written under a subdirectory of the checkpoint named after `--save-dir`. See
+`dataset/data_arguments.py` for the full list of data options (resolution, downsample rate,
+normalization, etc.).
