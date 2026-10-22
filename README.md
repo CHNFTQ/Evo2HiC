@@ -1,6 +1,6 @@
 # Evo2HiC
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17917912.svg)](https://doi.org/10.5281/zenodo.17917912)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17917911.svg)](https://doi.org/10.5281/zenodo.17917911)
 
 Evo2HiC is a multimodal and lightweight foundation model  for jointly modeling genomic sequences and structures.
 
@@ -34,13 +34,20 @@ conda activate Evo2HiC
 
 3. add current path to python path:
 ```bash
-export PYTHONPATH=($pwd):$PYTHONPATH
+export PYTHONPATH=$(pwd):$PYTHONPATH
 ```
 
 ## Pretrained Models
 
 Pretrained Evo2HiC models are available on Zenodo:
-https://doi.org/10.5281/zenodo.17917912
+https://doi.org/10.5281/zenodo.17917911
+
+`pretrained_weights` contains the pretrained encoders only and must be finetuned before predicting contact maps.
+`resolution_enhancement`, `epi_prediction`, `seq2hic_{H1ESC,HFF}` and `seq2hic_cg_{H1ESC,HFF}` are finetuned models.
+
+Files referenced in `config.py` but not included in this repository: [juicer_tools v2.20.00](https://github.com/aidenlab/Juicebox/releases/tag/v2.20.00),
+the [Umap k100 mappability track](https://hgdownload.soe.ucsc.edu/gbdb/hg38/hoffmanMappability/k100.Umap.MultiTrackMappability.bw),
+a MEME-format motif database (e.g. JASPAR) and [3d-dna](https://github.com/aidenlab/3d-dna).
 
 ## Usage
 ### Pretraining
@@ -78,6 +85,9 @@ python inference/retrieval_siglip.py -ckpt your_pretrained_ckpt
 accelerate launch train/train_CDNA2d_Seq2HiC.py --initialize your_pretrained_ckpt
 ```
 
+The Seq2HiC input depends on the sequencing depth of the input `.hic` file; for libraries much shallower or deeper
+than the training data, match the input's mean and standard deviation to the training data.
+
 ### Finetune pretrained checkpoint for Hi-C resolution enhancement
 
 1. Finetine the pretrained model:
@@ -99,13 +109,13 @@ accelerate launch train/train_CDNA1d.py --initialize your_pretrained_ckpt
 1. Predicting Hi-C maps with finetuned model (Seq2HiC or ResEnh):
 
 ```bash
-python inference/inference_CDNA2D.py -ckpt your_pretrained_ckpt --options_about_data
+python inference/inference_CDNA2d.py -ckpt your_pretrained_ckpt --options_about_data
 ```
 
 2. Predicting Epigenomic profiles with finetuned model:
 
 ```bash
-python inference/inference_CDNA1D.py -ckpt your_pretrained_ckpt --options_about_data
+python inference/inference_CDNA1d.py -ckpt your_pretrained_ckpt --options_about_data
 ```
 
 ### Model interpretation (motif discovery)
