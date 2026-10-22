@@ -36,13 +36,23 @@ def load_model(checkpoint):
     with open(args_file) as f:
         args = json.load(f)
 
+    # args.json files written by train_CDNA2d_ResEnh.py use different key names and omit
+    # some architecture flags; fill them in with the values used for training.
+    args.setdefault('input_channels', args.get('num_channels', 1))
+    args.setdefault('output_channels', args.get('num_channels', 1))
+    args.setdefault('dim', args.get('unet_input_dim', 128))
+    args.setdefault('force_final_conv', False)
+    args.setdefault('use_mrcrossembed', True)
+    args.setdefault('encoder_version', 'v1')
+
     normalizer = Normalizer(args['normalization'], max_reads=args['max_reads'], denominator = args['denominator'], step=args['step'])
     
     model = create_model(**{**args, 'normalizer' : normalizer, 'diffusion_steps' : 0})
     
     state = torch.load(checkpoint, map_location='cpu', weights_only=True)
     state_unified = {k.replace('unet', 'decoder'):v for k,v in state['model'].items()}
-    model.load_state_dict(state_unified)
+    # strict loading: a missing/unexpected key means the architecture does not match the checkpoint
+    model.load_state_dict(state_unified, strict=True)
 
     return model, args, normalizer
 
