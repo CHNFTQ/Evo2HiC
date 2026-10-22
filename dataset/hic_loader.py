@@ -28,6 +28,9 @@ class HiC_Loader:
         self.hic = hicstraw.HiCFile(self.hic_file)
         self.chromosomes = self.hic.getChromosomes()
 
+        if resolution not in self.hic.getResolutions():
+            raise ValueError(f'{hic_file} has no {resolution} bp resolution (available: {self.hic.getResolutions()})')
+
         base_coverage = extract_property(self.hic_file)
 
         if read_count == 'bin-coverage': 
@@ -60,11 +63,29 @@ class HiC_Loader:
             cnt = np.zeros(1000000)
 
             for ch0 in self.chromosomes:
-                if ch0.name in self.chromosome_filter: continue     
-                self.mzds_norm[ch0.name] = self.hic.getMatrixZoomData(ch0.name, ch0.name, "observed", self.norm_type, "BP", self.resolution)
+                if ch0.name in self.chromosome_filter: continue
+                try:
+                    self.mzds_norm[ch0.name] = self.hic.getMatrixZoomData(ch0.name, ch0.name, "observed", self.norm_type, "BP", self.resolution)
+                except Exception:
+                    # some 4DN files only carry KR
+                    print(f'HiC_Loader: {self.norm_type} not available in {self.hic_file}, falling back to KR')
+                    self.norm_type = 'KR'
+                    self.mzds_norm[ch0.name] = self.hic.getMatrixZoomData(ch0.name, ch0.name, "observed", self.norm_type, "BP", self.resolution)
                 self.mzds_raw[ch0.name]  = self.hic.getMatrixZoomData(ch0.name, ch0.name, "observed", 'NONE',         "BP", self.resolution)
 
-                self.norm_vectors[ch0.name] = self.mzds_norm[ch0.name].getNormVector(ch0.index)
+                # When the file has no such norm vector, hicstraw may return an empty array, an array of
+                # the wrong size, or raise. Treat that as "all bins valid" rather than masking every tile to NaN.
+                n_bins = int(np.ceil(ch0.length / self.resolution)) + 2
+                try:
+                    norm_vector = np.asarray(self.mzds_norm[ch0.name].getNormVector(ch0.index), dtype=float)
+                except Exception:
+                    norm_vector = np.array([])
+                if norm_vector.size == 0 or norm_vector.size > 2 * n_bins or not np.isfinite(norm_vector).any():
+                    print(f'HiC_Loader: no {self.norm_type} norm vector for {ch0.name} at {self.resolution} bp in {self.hic_file}; all bins treated as valid')
+                    norm_vector = np.ones(n_bins, dtype=float)
+                elif norm_vector.size < n_bins:
+                    norm_vector = np.pad(norm_vector, (0, n_bins - norm_vector.size), constant_values=np.nan)
+                self.norm_vectors[ch0.name] = norm_vector
 
                 expected_ch = self.hic.getMatrixZoomData(ch0.name, ch0.name, "expected", self.norm_type, "BP", self.resolution).getExpectedValues()
                 expected[:len(expected_ch)] += expected_ch
