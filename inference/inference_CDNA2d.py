@@ -28,6 +28,7 @@ def CDNA2d_data_predict_parser():
 
     Model_arguments = parser.add_argument_group('Model Arguments')
     Model_arguments.add_argument('-ckpt', '--checkpoint', type=str, required = True, help='the path to model checkpoint')
+    Model_arguments.add_argument('--input-file', type=str, default=None, help='optional single .hic file to run inference on (default: all test maps in hic_index)')
 
     return parser
 
@@ -70,7 +71,7 @@ def inference(dataset : HiC_DNA_Inference_Dataset, model:CDNA2d, batch_size):
         pbar = tqdm(loader)
         for data in pbar:
             pbar.set_description(
-                desc=f"[Predicting in valid set]")
+                desc=f"[Predicting]")
             
             for k in data:
                 data[k] = data[k].to(device)
@@ -117,9 +118,8 @@ if __name__ == '__main__':
     species = args.species
     downsample = args.downsample
     resolution = args.resolution
-    norm = args.norm
     read_count = modelargs['read_count']
-    max_seperation = args.max_seperation
+    max_seperation = args.max_separation
     DNA_option = args.DNA_option
 
     target_resolution = args.target_resolution
@@ -131,13 +131,13 @@ if __name__ == '__main__':
             if not os.path.isfile(input_file):
                 input_file = os.path.join(hic_data_dir, input_file)
             if args.input_option == 'expected':
-                loader = HiC_Loader(input_file, resolution=resolution, norm=norm, read_count=read_count)
+                loader = HiC_Loader(input_file, resolution=resolution, read_count=read_count)
             else:
-                loader = Downsample_HiC_Loader(input_file, downsample, species, resolution=resolution, norm=norm, read_count=read_count)
+                loader = Downsample_HiC_Loader(input_file, downsample, species, resolution=resolution, read_count=read_count)
             accession = '.'.join(os.path.basename(input_file).split('.')[:-1])
             hic_loaders = [(accession, loader)]
         else:
-            hic_loaders = create_loaders_with_index('test', species, return_name=True, downsample=downsample, resolution=resolution, norm=norm, read_count=read_count)
+            hic_loaders = create_loaders_with_index('test', species, return_name=True, downsample=downsample, resolution=resolution, read_count=read_count)
 
         DNA_loader = DNA_Loader(DNA_map[species], DNA_option)
         mappability_loader = Mappability_Loader(mappability_map[species], DNA_option)
@@ -159,7 +159,7 @@ if __name__ == '__main__':
 
                 test_set = HiC_DNA_Inference_Dataset(
                     chromosome_split = split,
-                    HiC_loader = [hic_loader],
+                    HiC_loaders = [hic_loader],
                     DNA_loader = DNA_loader,
                     Mappability_loader = mappability_loader,
                     normalizer = normalizer,
@@ -232,7 +232,7 @@ if __name__ == '__main__':
 
                 test_set = HiC_DNA_Inference_Dataset(
                     chromosome_split=split,
-                    Downsampled_HiC_loader = hic_loader,
+                    HiC_loaders = [hic_loader],
                     DNA_loader = dna_loader,
                     Mappability_loader = mappability_loader,
                     normalizer = normalizer,

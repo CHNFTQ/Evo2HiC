@@ -405,8 +405,12 @@ class HiC_DNA_Inference_Dataset(HiC_DNA_Dataset):
         ) -> None:
         super().__init__(**kwargs)
 
-    def read_hic(self, HiC_loader : Union[HiC_Loader, Cool_Loader], position, seed = 0):
-        raise NotImplementedError
+    def read_hic(self, HiC_loaders : List[Union[HiC_Loader, Cool_Loader]], position, seed = 0):
+        # At inference time the input map is read directly from the (optionally downsampled) loader;
+        # there is no target. __getitem__ passes a list of loaders, inference always uses one.
+        assert len(HiC_loaders) == 1, 'HiC_DNA_Inference_Dataset expects exactly one Hi-C loader'
+        HiC_loader = HiC_loaders[0]
+
         input_read_count = HiC_loader.read_count
         if self.input_option in ['HC', 'LC']:
             assert self.target_option == 'hic'
@@ -424,19 +428,16 @@ class HiC_DNA_Inference_Dataset(HiC_DNA_Dataset):
         else:
             target_read_count = input_read_count
 
-        if self.target_option == 'hic':
-            if not self.OE:
-                input_submatrix = np.nan_to_num(input_submatrix, nan=0)
-                input_submatrix = self.normalizer.normalize(input_submatrix).clip(max=1)
-            else:
-                expected = HiC_loader.get_expected(*position)
-                expected = (input_read_count / target_read_count) * expected
-                eps = expected.min()
-                input_submatrix = np.log((input_submatrix+eps) / (expected+eps))
-                input_submatrix = input_submatrix.clip(min=-2, max=2)
-                input_submatrix = np.nan_to_num(input_submatrix, nan=-2.001)
+        input_submatrix = np.nan_to_num(input_submatrix, nan=0)
+        input_submatrix = self.normalizer.normalize(input_submatrix).clip(max=1)
 
-        return np.zeros_like(input_submatrix) , np.log(target_read_count), input_submatrix , np.log(input_read_count)
+        # match the (n_hic, C, H, W) layout returned by HiC_DNA_Dataset.read_hic
+        target_read_count = np.array([target_read_count])
+        input_read_count = np.array([input_read_count])
+        input_submatrix = input_submatrix[np.newaxis]
+
+        return np.zeros_like(input_submatrix).astype(np.float32), np.log(target_read_count).astype(np.float32), \
+            input_submatrix.astype(np.float32), np.log(input_read_count).astype(np.float32)
 
 def prepare_datasets(
     resolution,
