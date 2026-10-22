@@ -10,7 +10,7 @@ class HiCEncoder(nn.Module):
             init_cross_embed_kernel_sizes = (3, 7, 15),
             num_resnet = 2,
             relative_resolutions = [1],
-            use_mrcrossembed = False,
+            use_mrcrossembed = True,     # matches the training default (train_utils.py); all released checkpoints use it
             force_final_conv = True
         ):
         super(HiCEncoder, self).__init__()
