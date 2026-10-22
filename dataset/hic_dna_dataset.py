@@ -81,6 +81,7 @@ class HiC_DNA_Dataset(Dataset):
         self.normalizer = normalizer
         self.DNA_loader = DNA_loader
         self.Mappability_loader = Mappability_loader
+        self.peak_loader = None      # optional auxiliary 1-D targets (dataset/peak_loader.py), set by the trainer
 
         self.chromosome_split = chromosome_split
 
@@ -275,6 +276,8 @@ class HiC_DNA_Dataset(Dataset):
             'input_matrix': [],
             'input_read_count': []
         }
+        if self.peak_loader is not None:
+            data['target_1d'] = []
 
         if self.sample and self.training:
             ch, s, e, strand = 0, 0, 0, 0
@@ -357,6 +360,8 @@ class HiC_DNA_Dataset(Dataset):
                 if not self.whole_row and self.max_separation > 0:
                     data['DNA_col'].append(get_with_drop(self.DNA_loader, drop, chr0, s0+shift0, e0+shift0, strand0))
                 data['DNA_row'].append(get_with_drop(self.DNA_loader, drop, chr1, s1+shift1, e1+shift1, strand1))
+            if self.peak_loader is not None:
+                data['target_1d'].append(self.peak_loader.get(chr1, s1, e1, strand1))
 
             if self.Mappability_loader is not None and self.Mappability_loader.option != 'No':
                 drop = self.training and np.random.rand() < self.map_drop_prob
@@ -473,6 +478,11 @@ def prepare_datasets(
             hic_loaders = [HiC_Loader(hic_file, resolution=augment_resolution, read_count=read_count)]
     elif target_option == 'cool':
         hic_loaders = [Cool_Loader('H1ESC', resolution=augment_resolution)]
+    elif target_option == 'cg':
+        # Evo2HiC-cg: Orca-style coarse-grained target (dataset/cg_loader.py)
+        from dataset.cg_loader import CG_Loader
+        assert target_specified is not None, '--target-option cg needs --target-specified <accession>'
+        hic_loaders = [CG_Loader(target_specified, resolution=augment_resolution, read_count=read_count)]
     else:
         raise NotImplementedError
 

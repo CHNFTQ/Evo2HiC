@@ -13,7 +13,7 @@ def add_hic_dataset_arguments(parser = None):
 
     HiC_data_arguments.add_argument('-input', '--input-option', type=str, choices=['HC', 'LC', 'expected'], default='LC', help='Use which matrix as input')
     HiC_data_arguments.add_argument('--downsample', type=float, default = 16, help='downsample rate when input LC')
-    HiC_data_arguments.add_argument('-target', '--target-option', type=str, choices=['hic', 'norm', 'hic+norm', 'cool'], default='hic', help='Use which matrix as target')
+    HiC_data_arguments.add_argument('-target', '--target-option', type=str, choices=['hic', 'norm', 'hic+norm', 'cool', 'cg'], default='hic', help='Use which matrix as target')
     HiC_data_arguments.add_argument('--target-specified', type=str, default=None)
     HiC_data_arguments.add_argument('--high-coverage-hic', action=argparse.BooleanOptionalAction, default=False, help='Use high-coverage hic')
     HiC_data_arguments.add_argument('--avg-hic', action=argparse.BooleanOptionalAction, default=False, help='average over hic')
