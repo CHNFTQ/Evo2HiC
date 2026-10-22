@@ -55,6 +55,10 @@ class CDNA2d(nn.Module):
             DNA_row_embeds = None
 
         data['DNA_embeds'] = DNA_embeds
+        # optional auxiliary 1-D head on the DNA embeddings (Evo2HiC-cg, Orca-style peak supervision)
+        aux_logits = None
+        if getattr(self, 'aux_head', None) is not None and DNA_row_embeds is not None:
+            aux_logits = self.aux_head(DNA_row_embeds.flatten(0, 2))      # (N, n_feat, L); returned as a 5th output
 
         new_data = {}
 
@@ -75,6 +79,8 @@ class CDNA2d(nn.Module):
         pred = self.decoder(**new_data).unflatten(0, (b, s, h))
 
         if return_emb:
+            if aux_logits is not None:
+                return pred, input_embeds, DNA_embeds, DNA_row_embeds, aux_logits
             return pred, input_embeds, DNA_embeds, DNA_row_embeds
 
         return pred

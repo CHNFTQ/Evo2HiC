@@ -88,6 +88,24 @@ accelerate launch train/train_CDNA2d_Seq2HiC.py --initialize your_pretrained_ckp
 The Seq2HiC input depends on the sequencing depth of the input `.hic` file; for libraries much shallower or deeper
 than the training data, match the input's mean and standard deviation to the training data.
 
+### Finetune pretrained checkpoint for predicting Hi-C in Orca's setting (Evo2HiC-cg)
+
+1. Prepare the coarse-grained Micro-C target and the auxiliary peak targets from Orca's resources:
+
+```bash
+python scripts/make_cg_targets.py your_mcool your_hic_accession --scale your_scale
+python scripts/make_aux_peaks.py your_peaks.bed.sorted.gz your_peaks.bed.sorted.features your_hic_accession
+```
+
+2. Finetune the pretrained model:
+
+```bash
+accelerate launch train/train_CDNA2d_Seq2HiC.py -target cg --target-specified your_hic_accession --aux-peaks your_hic_accession --initialize-dna-encoder your_pretrained_ckpt
+```
+
+The full hyper-parameters are in the `args.json` of the released checkpoints. Checkpoints were selected after
+recomputing batch-normalization statistics (`--recalibrate-bn`, then `--valid-only`).
+
 ### Finetune pretrained checkpoint for Hi-C resolution enhancement
 
 1. Finetine the pretrained model:

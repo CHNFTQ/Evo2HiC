@@ -32,10 +32,36 @@ from train.train_utils import *
 torch.autograd.set_detect_anomaly(True)
 import argparse
 
+def recalibrate_bn(module, loader, n_batches, evo_encoder=None, args=None):
+    """Recompute the BatchNorm running statistics of `module` on n_batches training batches (cumulative
+    average, momentum=None). Mirrors the training forward call."""
+    bns = [m for m in module.modules() if isinstance(m, torch.nn.modules.batchnorm._BatchNorm)]
+    if not bns:
+        return
+    moms = [m.momentum for m in bns]
+    for m in bns:
+        m.reset_running_stats(); m.momentum = None
+    was_training = module.training; module.train()
+    with torch.no_grad():
+        for i, data in enumerate(loader):
+            if i >= n_batches:
+                break
+            data.pop('target_1d', None)
+            if args is not None and args.evo2_option == 'Yes' and args.use_evo_for_DNA:
+                Evo_embeds = evo_encoder(data['embedding_col'], data['embedding_row'], data['mappability_col'], data['mappability_row'])
+                module(**data, DNA_embeds=Evo_embeds)
+            else:
+                module(**data, return_emb=True)
+    for m, mom in zip(bns, moms):
+        m.momentum = mom
+    module.train(was_training)
+
+
 def train(args):
     accelerator = Accelerator(
         gradient_accumulation_steps= args.accumulate_step,
-        kwargs_handlers =  [DistributedDataParallelKwargs(find_unused_parameters = True)]
+        kwargs_handlers =  [DistributedDataParallelKwargs(find_unused_parameters = True)],
+        **({'mixed_precision': args.mixed_precision} if args.mixed_precision else {})
     )
 
     utils.VERBOSE = accelerator.is_main_process
@@ -57,7 +83,7 @@ def train(args):
         log_file_path = os.path.join(out_dir, "experiment.log")
 
         with open(os.path.join(out_dir, "args.json"), 'w') as f:
-            json.dump(args.__dict__, f, indent=2)
+            json.dump(args.__dict__, f, indent=2, default=float)
 
         logging.basicConfig(
             level=logging.INFO,
@@ -90,6 +116,11 @@ def train(args):
     normalizer = Normalizer(args.normalization, max_reads=args.max_reads, denominator = args.denominator, step=args.step)
 
     model = create_model(**{**args.__dict__, 'normalizer' : normalizer, 'diffusion_steps' : 0})
+    if args.aux_peaks is not None:
+        from dataset.peak_loader import PeakLoader
+        peak_loader = PeakLoader(args.aux_peaks, resolution=args.resolution)
+        model.aux_head = nn.Conv1d(model.DNA_encoder.encoder.dim, peak_loader.n_feat, 1)
+        print_info(f'auxiliary peak targets: {args.aux_peaks}, {peak_loader.n_feat} features, weight {args.aux_weight}')
 
     if args.evo2_option == 'Yes':
         evo_encoder = DualEvoEncoder(
@@ -132,7 +163,8 @@ def train(args):
         model.load_state_dict(state['model'])
         step = state['step']
         optimizer.load_state_dict(state['optimizer'])
-        scheduler.load_state_dict(state['scheduler'])
+        if args.reset_lr is None:
+            scheduler.load_state_dict(state['scheduler'])
 
         if args.evo2_option == 'Yes':
             if 'evo_encoder' in state:
@@ -142,12 +174,21 @@ def train(args):
             with open(os.path.join(os.path.dirname(checkpoint), 'best.json')) as f:
                 best = json.load(f)
 
+        if args.reset_lr is not None:
+            # continue from a checkpoint at a new constant learning rate (the restored optimizer state would
+            # otherwise put the learning rate back to its old value)
+            for _g in optimizer.param_groups:
+                _g['lr'] = args.reset_lr; _g['initial_lr'] = args.reset_lr
+            scheduler = ConstantLR(optimizer, factor=1, total_iters=10000000)
+            print_info(f'learning rate reset to {args.reset_lr} (constant) for this continuation')
+
         print_info('loaded')
     elif args.initialize is not None:
         checkpoint = args.initialize
         state = torch.load(checkpoint, map_location='cpu', weights_only=True)
         state_unified = {k.replace('unet', 'decoder'):v for k,v in state['model'].items()}
-        model.load_state_dict(state_unified)
+        missing, unexpected = model.load_state_dict(state_unified, strict=False)
+        assert not unexpected and all(k.startswith('aux_head') for k in missing), (missing, unexpected)   # only a new aux head may be missing
 
         if args.evo2_option == 'Yes':
             if 'evo_encoder' in state:
@@ -174,6 +215,13 @@ def train(args):
 
             print_info('DNA_encoder initialized')
 
+    if args.no_encoder_dropout:
+        _nd = 0
+        for _m in model.DNA_encoder.modules():
+            if isinstance(_m, torch.nn.Dropout):
+                _m.p = 0.0; _nd += 1
+        print_info(f'encoder dropout disabled in {_nd} modules')
+
     if args.evo2_option == 'Yes' and not args.use_evo_for_DNA:
         for param in evo_encoder.parameters():
             param.requires_grad = False
@@ -186,11 +234,49 @@ def train(args):
         model, optimizer, scheduler = accelerator.prepare(model, optimizer, scheduler)
 
     train_set, valid_set, _ = prepare_datasets(**{**args.__dict__, 'normalizer' : normalizer, 'dataset_size' : accelerator.num_processes * args.epoch_step * args.batch_size})
+    if args.aux_peaks is not None:
+        train_set.peak_loader = peak_loader
+        valid_set.peak_loader = peak_loader
 
     train_dl = DataLoader(train_set, batch_size = args.batch_size, shuffle=True,  num_workers = 20, drop_last=True)
     valid_dl = DataLoader(valid_set, batch_size = args.batch_size, shuffle=False, num_workers = 20)
 
     train_dl, valid_dl = accelerator.prepare(train_dl, valid_dl)
+
+    if args.recalibrate_bn is not None:
+        # recompute BatchNorm statistics of the given checkpoint on training batches, save recal_<name>.pt and exit
+        _w = torch.load(args.recalibrate_bn, map_location='cpu', weights_only=True)
+        _m = accelerator.unwrap_model(model)
+        _mk, _uk = _m.load_state_dict({k.replace('unet', 'decoder'): v for k, v in _w['model'].items()}, strict=False); print_info(f'recal load: {len(_mk)} missing, {len(_uk)} unexpected keys'); assert not _uk and all(k.startswith('aux_head') for k in _mk), (_mk, _uk)
+        recalibrate_bn(_m, train_dl, args.bn_recal_batches, evo_encoder if args.evo2_option == 'Yes' else None, args)
+        _out = os.path.join(os.path.dirname(args.recalibrate_bn), 'recal_' + os.path.basename(args.recalibrate_bn))
+        torch.save({'model': _m.state_dict(), 'step': _w.get('step', -1), 'bn_recal_batches': args.bn_recal_batches}, _out)
+        print_info(f'BN-recalibrated weights written to {_out}'); return
+
+    if args.valid_only is not None:
+        # validation of the given weights (e.g. a BN-recalibrated checkpoint) with the same MSE/PCC as the training loop
+        _w = torch.load(args.valid_only, map_location='cpu', weights_only=True)
+        _m = accelerator.unwrap_model(model)
+        _mk, _uk = _m.load_state_dict({k.replace('unet', 'decoder'): v for k, v in _w['model'].items()}, strict=False)
+        assert not _uk and all(k.startswith('aux_head') for k in _mk), (_mk, _uk)
+        model.eval()
+        _mses, _t, _p = [], [], []
+        with torch.no_grad():
+            for data in tqdm(valid_dl, disable=not accelerator.is_main_process):
+                data.pop('target_1d', None)
+                pred = model(**data, return_emb=True)[0]
+                pred = (pred + pred.transpose(-1, -2)) / 2
+                target = data['target_matrix']; mask = torch.isfinite(target)
+                _mses.append(F.mse_loss(pred * mask, torch.nan_to_num(target) * mask, reduction='none').mean())
+                _t.append(target); _p.append(pred)
+        _mses = accelerator.gather(torch.stack(_mses)); _t = accelerator.gather(torch.concat(_t)); _p = accelerator.gather(torch.concat(_p))
+        if accelerator.is_main_process:
+            _t, _p = _t.cpu().numpy(), _p.cpu().numpy(); pccs = []
+            for k in range(1, _t.shape[-1]):
+                tk = np.diagonal(_t[..., 0, :, :], offset=k, axis1=-2, axis2=-1); pk = np.diagonal(_p[..., 0, :, :], offset=k, axis1=-2, axis2=-1)
+                m = np.isfinite(tk); pccs.append(pearsonr(tk[m], pk[m])[0])
+            print_info(f'VALID-ONLY\t{args.valid_only}\tstep={_w.get("step", -1)}\tmse={_mses.mean().item():.8f}\tpcc={np.mean(pccs):.6f}')
+        return
 
     if accelerator.is_main_process:
         ckpt_maintainer = checkpoint_maintainer(debug = args.debug)
@@ -209,11 +295,15 @@ def train(args):
         pbar = tqdm(train_dl, disable = not accelerator.is_main_process)
         for data in pbar:
             with accelerator.accumulate(model):
+                target_1d = data.pop('target_1d', None)
+                aux_logits = None
                 if args.evo2_option == 'Yes' and args.use_evo_for_DNA:
                     Evo_embeds = evo_encoder(data['embedding_col'], data['embedding_row'], data['mappability_col'], data['mappability_row'])
                     pred = model(**data, DNA_embeds = Evo_embeds)
                 else:
-                    pred, _, _, DNA_row_embeds = model(**data, return_emb = True)
+                    out = model(**data, return_emb = True)
+                    pred, _, _, DNA_row_embeds = out[:4]
+                    aux_logits = out[4] if len(out) > 4 else None
 
                 pred = (pred + pred.transpose(-1, -2))/2
                 target = data['target_matrix']
@@ -224,6 +314,9 @@ def train(args):
                 mse = F.mse_loss(pred_m, target_m, reduction='none').mean()
 
                 loss = mse
+                if aux_logits is not None and target_1d is not None and target_1d.numel() > 0:
+                    aux_loss = F.binary_cross_entropy_with_logits(aux_logits, target_1d.reshape(-1, *target_1d.shape[-2:]))
+                    loss = mse + args.aux_weight * aux_loss
 
                 if args.evo2_option == 'Yes' and not args.use_evo_for_DNA:
                     _, Evo_row_embeds = evo_encoder(data['embedding_col'], data['embedding_row'], data['mappability_col'], data['mappability_row'], return_emb=True)
@@ -261,6 +354,7 @@ def train(args):
             if accelerator.is_main_process and not args.debug:
                 results = {
                     'train loss (DNA-HiC)' : mse.cpu().item(),
+                    **({'train loss (aux-1d)': aux_loss.cpu().item()} if args.aux_peaks is not None else {}),
                     'train loss (overall)' : loss.cpu().item(),
                     'learning rate' : learning_rate
                 }
@@ -322,11 +416,12 @@ def train(args):
                 valid_losses = []
                 first = True
                 for data in valid_bar:
+                    data.pop('target_1d', None)
                     if args.evo2_option == 'Yes' and args.use_evo_for_DNA:
                         Evo_embeds = evo_encoder(data['embedding_col'], data['embedding_row'], data['mappability_col'], data['mappability_row'])
                         pred = model(**data, DNA_embeds = Evo_embeds)
                     else:
-                        pred, HiC_embeds, DNA_embeds, DNA_row_embeds = model(**data, return_emb = True)
+                        pred, HiC_embeds, DNA_embeds, DNA_row_embeds = model(**data, return_emb = True)[:4]
 
                     pred = (pred + pred.transpose(-1, -2))/2
                     target = data['target_matrix']
@@ -452,7 +547,7 @@ def train(args):
 
         if accelerator.is_main_process:
             with open(os.path.join(out_dir, "best.json"), 'w') as f:
-                json.dump(best, f, indent=2)
+                json.dump(best, f, indent=2, default=float)
             ckpt_maintainer.clean()
 
             if not args.debug:

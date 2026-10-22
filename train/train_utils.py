@@ -34,7 +34,15 @@ def train_parser():
 
     #train param
     Train_arguments = parser.add_argument_group('Train Arguments')
+    Train_arguments.add_argument('--aux-peaks', type=str, default=None, help='name of the binned peak targets in cg_target_dir (scripts/make_aux_peaks.py) for an auxiliary 1-D BCE loss on the DNA encoder')
+    Train_arguments.add_argument('--aux-weight', type=float, default=0.05, help='weight of the auxiliary peak loss')
+    Train_arguments.add_argument('--reset-lr', type=float, default=None, help='on --load-checkpoint, override the restored learning rate with this constant value')
+    Train_arguments.add_argument('--mixed-precision', type=str, default=None, choices=['no', 'fp16', 'bf16'], help='autocast precision for training (default: fp32)')
+    Train_arguments.add_argument('--no-encoder-dropout', action='store_true', help='disable the dropout (p=0.1) inside the DNA encoder 1D conv blocks')
     Train_arguments.add_argument('--eval-only', action=argparse.BooleanOptionalAction,  default = False, help='Only evaluate the model.')
+    Train_arguments.add_argument('--valid-only', type=str, default=None, help='run the validation once on the weights in this file (e.g. a BN-recalibrated checkpoint) and exit')
+    Train_arguments.add_argument('--recalibrate-bn', type=str, default=None, help='recompute BatchNorm statistics of this checkpoint on training batches, save recal_<name>.pt next to it and exit')
+    Train_arguments.add_argument('--bn-recal-batches', type=int, default=50, help='training batches used by --recalibrate-bn')
     Train_arguments.add_argument('--seed', type=int, default=0, help='The seed to train the model')
     Train_arguments.add_argument('--max-step', type=int, default = 50000, help='The max step of training.')
     Train_arguments.add_argument('--warmup-step', type=int, default = 0, help='the number of warm up step.')

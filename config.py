@@ -27,6 +27,10 @@ motif_data = 'data/dna/motifs.meme'
 hic2tarck_dir = 'data/hic2track'
 hic2track_index = 'data/hic2track/index.tsv'
 
+# config for Evo2HiC-cg (Seq2HiC with an Orca-style coarse-grained target, see scripts/make_cg_targets.py
+# and scripts/make_aux_peaks.py)
+cg_target_dir = 'data/cg_targets'
+
 references = {
     'human' : 'hg38',
     'mouse' : 'mm10'
