@@ -51,7 +51,8 @@ def load_model(checkpoint):
     model = create_model(**{**args, 'normalizer' : normalizer, 'diffusion_steps' : 0})
     
     state = torch.load(checkpoint, map_location='cpu', weights_only=True)
-    state_unified = {k.replace('unet', 'decoder'):v for k,v in state['model'].items()}
+    # the auxiliary peak head of Evo2HiC-cg is only used for the training loss
+    state_unified = {k.replace('unet', 'decoder'):v for k,v in state['model'].items() if not k.startswith('aux_head')}
     # strict loading: a missing/unexpected key means the architecture does not match the checkpoint
     model.load_state_dict(state_unified, strict=True)
 
