@@ -71,12 +71,20 @@ def find_chr_in_set(chr, chr_set):
     
     raise NotImplementedError
 
-def extract_property(hic_file):
+def extract_property(hic_file, max_chromosomes = 200):
     pfile = os.path.join(hic_property_dir, os.path.basename(hic_file) + '.property')
 
     hic = hicstraw.HiCFile(hic_file)
     chromosomes = hic.getChromosomes()
     filtered_chromosomes = [ch for ch in chromosomes if ch.name != 'ALL' and ch.name != 'All']
+
+    # Assemblies with many unplaced scaffolds give millions of chromosome pairs to scan, which
+    # exhausts hicstraw's file handles ("cannot be opened for reading"). Only the read-count to
+    # genome-length ratio is used, so restrict both to the largest sequences in that case.
+    if len(filtered_chromosomes) > max_chromosomes:
+        keep = set(ch.name for ch in sorted(filtered_chromosomes, key=lambda ch: ch.length, reverse=True)[:max_chromosomes])
+        filtered_chromosomes = [ch for ch in filtered_chromosomes if ch.name in keep]   # keep file order
+        print(f'{hic_file}: {len(chromosomes)} sequences, computing read coverage on the {max_chromosomes} largest only')
 
     try:
         with open(pfile) as f:
@@ -98,10 +106,13 @@ def extract_property(hic_file):
             if n0 == 'ALL' or n1 == 'ALL': continue
             if n0 == 'All' or n1 == 'All': continue
 
-            mzd = hic.getMatrixZoomData(n0, n1, "observed", 'NONE', "BP", base_resolution)
             L0, L1 = ch0.length, ch1.length
-
-            records = mzd.getRecords(0, L0, 0, L1)
+            try:
+                mzd = hic.getMatrixZoomData(n0, n1, "observed", 'NONE', "BP", base_resolution)
+                records = mzd.getRecords(0, L0, 0, L1)
+            except Exception:
+                # the pair has no contact map in this file
+                continue
             if len(records) <= 0 : continue
 
             s = np.sum([record.counts for record in records])
